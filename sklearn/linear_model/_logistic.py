@@ -11,34 +11,32 @@ Logistic Regression
 #         Arthur Mensch <arthur.mensch@m4x.org
 
 import numbers
-from numbers import Integral, Real
 import warnings
+from numbers import Integral, Real
 
 import numpy as np
-from scipy import optimize
 from joblib import Parallel, effective_n_jobs
+from scipy import optimize
 
 from sklearn.metrics import get_scorer_names
 
-from ._base import LinearClassifierMixin, SparseCoefMixin, BaseEstimator
+from .._loss.loss import HalfBinomialLoss, HalfMultinomialLoss
+from ..metrics import get_scorer
+from ..model_selection import check_cv
+from ..preprocessing import LabelBinarizer, LabelEncoder
+from ..svm._base import _fit_liblinear
+from ..utils import (check_array, check_consistent_length, check_random_state,
+                     compute_class_weight)
+from ..utils._param_validation import Interval, StrOptions
+from ..utils.extmath import row_norms, softmax
+from ..utils.fixes import delayed
+from ..utils.multiclass import check_classification_targets
+from ..utils.optimize import _check_optimize_result, _newton_cg
+from ..utils.validation import _check_sample_weight, check_is_fitted
+from ._base import BaseEstimator, LinearClassifierMixin, SparseCoefMixin
+from ._glm.glm import NewtonCholeskySolver
 from ._linear_loss import LinearModelLoss
 from ._sag import sag_solver
-from ._glm.glm import NewtonCholeskySolver
-from .._loss.loss import HalfBinomialLoss, HalfMultinomialLoss
-from ..preprocessing import LabelEncoder, LabelBinarizer
-from ..svm._base import _fit_liblinear
-from ..utils import check_array, check_consistent_length, compute_class_weight
-from ..utils import check_random_state
-from ..utils.extmath import softmax
-from ..utils.extmath import row_norms
-from ..utils.optimize import _newton_cg, _check_optimize_result
-from ..utils.validation import check_is_fitted, _check_sample_weight
-from ..utils.multiclass import check_classification_targets
-from ..utils.fixes import delayed
-from ..utils._param_validation import StrOptions, Interval
-from ..model_selection import check_cv
-from ..metrics import get_scorer
-
 
 _LOGISTIC_SOLVER_CONVERGENCE_MSG = (
     "Please also refer to the documentation for alternative solver options:\n"
@@ -113,6 +111,8 @@ def _logistic_regression_path(
     sample_weight=None,
     l1_ratio=None,
     n_threads=1,
+    x_test=None,
+    y_test=None
 ):
     """Compute a Logistic Regression model for a list of regularization
     parameters.
@@ -277,7 +277,14 @@ def _logistic_regression_path(
             accept_large_sparse=solver not in ["liblinear", "sag", "saga"],
         )
         y = check_array(y, ensure_2d=False, dtype=None)
-        check_consistent_length(X, y)
+        x_test = check_array(
+            x_test,
+            accept_sparse="csr",
+            dtype=np.float64,
+            accept_large_sparse=solver not in ["liblinear", "sag", "saga"],
+        )
+        check_consistent_length(y, y_test)
+        check_consistent_length(x_test, y_test)
     n_samples, n_features = X.shape
 
     classes = np.unique(y)
@@ -326,6 +333,10 @@ def _logistic_regression_path(
         w0 = np.zeros(n_features + int(fit_intercept), dtype=X.dtype)
         mask = y == pos_class
         y_bin = np.ones(y.shape, dtype=X.dtype)
+
+        y_test_bin = np.ones(y_test.shape, dtype=X.dtype)
+        mask_test = y_test == pos_class
+
         if solver in ["lbfgs", "newton-cg", "newton-cholesky"]:
             # HalfBinomialLoss, used for those solvers, represents y in [0, 1] instead
             # of in [-1, 1].
@@ -334,6 +345,7 @@ def _logistic_regression_path(
         else:
             mask_classes = np.array([-1, 1])
             y_bin[~mask] = -1.0
+            y_test_bin[~mask_test] = -1.0
 
         # for compute_class_weight
         if class_weight == "balanced":
@@ -421,6 +433,7 @@ def _logistic_regression_path(
         warm_start_sag = {"coef": w0.T}
     else:
         target = y_bin
+        target_test = y_test_bin
         if solver == "lbfgs":
             loss = LinearModelLoss(
                 base_loss=HalfBinomialLoss(), fit_intercept=fit_intercept
@@ -536,6 +549,8 @@ def _logistic_regression_path(
                 max_squared_sum,
                 warm_start_sag,
                 is_saga=(solver == "saga"),
+                x_test=x_test,
+                y_test=target_test,
             )
 
         else:
@@ -1127,7 +1142,7 @@ class LogisticRegression(LinearClassifierMixin, SparseCoefMixin, BaseEstimator):
         self.n_jobs = n_jobs
         self.l1_ratio = l1_ratio
 
-    def fit(self, X, y, sample_weight=None):
+    def fit(self, X, y, sample_weight=None, x_test=None, y_test=None):
         """
         Fit the model according to the given training data.
 
@@ -1196,6 +1211,14 @@ class LogisticRegression(LinearClassifierMixin, SparseCoefMixin, BaseEstimator):
         X, y = self._validate_data(
             X,
             y,
+            accept_sparse="csr",
+            dtype=_dtype,
+            order="C",
+            accept_large_sparse=solver not in ["liblinear", "sag", "saga"],
+        )
+        x_test, y_test = self._validate_data(
+            x_test,
+            y_test,
             accept_sparse="csr",
             dtype=_dtype,
             order="C",
@@ -1309,6 +1332,8 @@ class LogisticRegression(LinearClassifierMixin, SparseCoefMixin, BaseEstimator):
                 max_squared_sum=max_squared_sum,
                 sample_weight=sample_weight,
                 n_threads=n_threads,
+                x_test=x_test,
+                y_test=y_test
             )
             for class_, warm_start_coef_ in zip(classes_, warm_start_coef)
         )

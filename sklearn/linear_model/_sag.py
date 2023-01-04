@@ -8,12 +8,12 @@ import warnings
 
 import numpy as np
 
-from ._base import make_dataset
-from ._sag_fast import sag32, sag64
 from ..exceptions import ConvergenceWarning
 from ..utils import check_array
-from ..utils.validation import _check_sample_weight
 from ..utils.extmath import row_norms
+from ..utils.validation import _check_sample_weight
+from ._base import make_dataset
+from ._sag_fast import sag32, sag64
 
 
 def get_auto_step_size(
@@ -100,6 +100,8 @@ def sag_solver(
     max_squared_sum=None,
     warm_start_mem=None,
     is_saga=False,
+    x_test=None,
+    y_test=None,
 ):
     """SAG solver for Ridge and LogisticRegression.
 
@@ -304,6 +306,9 @@ def sag_solver(
         num_seen_init = 0
 
     dataset, intercept_decay = make_dataset(X, y, sample_weight, random_state)
+    x_train, y_train = X, y
+    print(f'before sag() first entry of X {X[0][0]=}')
+    print(f'before sag() first entry of dataset {dataset._sample_py(0)[0][0][0]=}')
 
     if max_squared_sum is None:
         max_squared_sum = row_norms(X, squared=True).max()
@@ -320,6 +325,8 @@ def sag_solver(
             "Current sag implementation does not handle "
             "the case step_size * alpha_scaled == 1"
         )
+
+    print(f'after get_auto_step_size, {step_size=}')
 
     sag = sag64 if X.dtype == np.float64 else sag32
     num_seen, n_iter_ = sag(
@@ -344,6 +351,10 @@ def sag_solver(
         intercept_decay,
         is_saga,
         verbose,
+        x_train, # temporary change
+        y_train, # temporary change
+        x_test,  # temporary change
+        y_test,  # temporary change
     )
 
     if n_iter_ == max_iter:
